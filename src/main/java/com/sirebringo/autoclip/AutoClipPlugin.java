@@ -27,16 +27,16 @@ package com.sirebringo.autoclip;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
+import com.google.gson.JsonObject;
 import com.google.inject.Provides;
 import io.obswebsocket.community.client.OBSRemoteController;
+import io.obswebsocket.community.client.message.event.outputs.ReplayBufferSavedEvent;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
 import net.runelite.api.events.*;
 import net.runelite.api.widgets.Widget;
-import net.runelite.api.widgets.WidgetID;
 import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.Notifier;
 import net.runelite.client.config.ConfigManager;
@@ -56,15 +56,9 @@ import net.runelite.client.util.Text;
 
 import javax.inject.Inject;
 import java.awt.image.BufferedImage;
-import java.time.Duration;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -128,19 +122,16 @@ public class AutoClipPlugin extends Plugin {
     private KillType killType;
     private Integer killCountNumber;
 
-    private boolean shouldTakeScreenshot;
+    private boolean shouldTakeClip;
     private boolean notificationStarted;
 
     private OBSRemoteController obsController;
+    private JsonObject baseObsOutputSettings;
 
-    private long replayBufferDuration = -1;// lateinit, see onOBSWSReady
-    
-    private final DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private final String OBS_BASE_FORMAT = "%CCYY-%MM-%DD %hh-%mm-%ss";
+    private long replayBufferDuration = -1; // lazy init, see onOBSWSReady
 
-    /**
-     * Delay in seconds to wait when an event is fired
-     */
-    private int delay; // seconds
+    private ScheduledExecutorService executorService = Executors.newSingleThreadScheduledExecutor();
 
     @Inject
     private AutoClipConfig config;
@@ -179,7 +170,7 @@ public class AutoClipPlugin extends Plugin {
 
     private String kickPlayerName;
 
-    private final HotkeyListener hotkeyListener = new HotkeyListener(() -> config.hotkey()) {
+    private final HotkeyListener hotkeyListener = new HotkeyListener(() -> config.clipHotkey()) {
         @Override
         public void hotkeyPressed() {
             manualScreenshot();
@@ -193,72 +184,21 @@ public class AutoClipPlugin extends Plugin {
 
     @Override
     protected void startUp() {
-        delay = config.obsDelay();
         obsController = OBSRemoteController
                 .builder()
                 .host(config.obsServerHost())
                 .port(config.obsServerPort())
                 .password(config.obsServerPassword())
+                .registerEventListener(
+                        ReplayBufferSavedEvent.class, this::onSuccessfulSave
+                )
                 .lifecycle()
                 .onReady(this::onOBSWSReady)
                 .and()
                 .autoConnect(true)
                 .build();
-        // And then? What happens?
-
-        // This is all from what I know (I'm developing a plugin for a blackbox application, this startUp "boots" up the plugin basically)
-
-        // Besides this startUp method, is there other methods that gets called by the plugin system?
-
-        // yes, a shutdown down below, where I think I need to call `obsController.stop()`?
-        // disconnect and stop yeah
-
-        // cool, then I think I was overcomplicating stuff for myself with the lifecycle-related events note in the readme
-        // so, now I can just call `obsController.sendRequest` anywhere in the app, right?
-
-        // It should be ok yeah, as you seem at that point having only 1 thread
-        // What is the typical thing you want to acomplish? with this plugin
-
-        // So, it's for a game called OldSchool RuneScape, an MMO where you get drops, levels, etc.
-        // I want the client to automatically trigger a replay buffer save, so you can get automated "clips"
-        // which should help out a lot of streamers/content creators with things like "I have forgot to record"
-
-        // "I want the client to automatically trigger a replay buffer save" -> When?
-
-        // Based off of "notifications" in the game, which were already defined by someone else (the creator of the client)
-
-        // How does this plugin receives those notifications?
-
-        // I am not 100% sure yet, but, I'm taking you with me again, hang on.
-
         keyManager.registerKeyListener(hotkeyListener);
     }
-
-
-    // Yes, so this works indeed, but I don't have to necessarily fire the request to "Save the replay buffer" whenever I need
-    // the output settings
-
-    // What is the condition to send the Save?
-
-    // hang on, let me take you there :P
-
-    // so there's a lot of cases where I need to trigger the "save", but only a single time I need the output settings (which is at startUp)
-    // this indeed would have been my go-to as well, but how does this work when I, let's say, want to fire 20 different requests. Then it's going to be
-    // boolean hell, right?
-
-    // take me to an example where you want to send one of those requests.
-
-
-    /*private void fireRequests(boolean withOutputSettings) {
-        obsController.sendRequest(SaveReplayBufferRequest.builder().build(), this::onReplayBufferSaveEnd);
-        // Send Request 2
-        if (withOutputSettings) {
-            obsController.sendRequest(GetOutputSettingsRequest.builder().outputName("Replay Buffer").build(), (GetOutputSettingsResponse requestResponse) -> {
-                JsonObject outputSettings = requestResponse.getOutputSettings();
-                replayBufferDuration = outputSettings.get("max_time_sec").getAsLong();
-            });
-        }
-    }*/
 
     @Override
     protected void shutDown() throws Exception {
@@ -266,45 +206,47 @@ public class AutoClipPlugin extends Plugin {
         keyManager.unregisterKeyListener(hotkeyListener);
         kickPlayerName = null;
         notificationStarted = false;
+        obsController.disconnect();
         obsController.stop();
+        obsController = null;
     }
 
     @Subscribe
-    public void onGameTick(GameTick event) {//OK
-        if (!shouldTakeScreenshot) {
+    public void onGameTick(GameTick event) {
+        if (!shouldTakeClip) {
             return;
         }
 
-        shouldTakeScreenshot = false;
-        String screenshotSubDir = null;
+        shouldTakeClip = false;
+        String clipSubDir = null;
 
         String fileName = null;
         if (client.getWidget(WidgetInfo.LEVEL_UP_LEVEL) != null) {
             fileName = parseLevelUpWidget(WidgetInfo.LEVEL_UP_LEVEL);
-            screenshotSubDir = "Levels";
+            clipSubDir = "Levels";
         } else if (client.getWidget(WidgetInfo.DIALOG_SPRITE_TEXT) != null) {
             String text = client.getWidget(WidgetInfo.DIALOG_SPRITE_TEXT).getText();
             if (Text.removeTags(text).contains("High level gamble")) {
-                if (config.screenshotHighGamble()) {
+                if (config.clipHighGamble()) {
                     fileName = parseBAHighGambleWidget(text);
-                    screenshotSubDir = "BA High Gambles";
+                    clipSubDir = "BA High Gambles";
                 }
             } else {
-                if (config.screenshotLevels()) {
+                if (config.clipLevels()) {
                     fileName = parseLevelUpWidget(WidgetInfo.DIALOG_SPRITE_TEXT);
-                    screenshotSubDir = "Levels";
+                    clipSubDir = "Levels";
                 }
             }
         } else if (client.getWidget(WidgetInfo.QUEST_COMPLETED_NAME_TEXT) != null) {
             String text = client.getWidget(WidgetInfo.QUEST_COMPLETED_NAME_TEXT).getText();
             fileName = parseQuestCompletedWidget(text);
-            screenshotSubDir = "Quests";
+            clipSubDir = "Quests";
         }
 
         if (fileName != null) {
-            startReplayBufferSave();
+            startReplayBufferSave(fileName, clipSubDir);
 
-            // this is a copy of the "screenshot" plugin they already had, but instead of saving a screenshot, I now want to
+            // this is a copy of the "clip" plugin they already had, but instead of saving a clip, I now want to
             // save the replay buffer of OBS
 
 
@@ -317,24 +259,24 @@ public class AutoClipPlugin extends Plugin {
         Actor actor = actorDeath.getActor();
         if (actor instanceof Player) {
             Player player = (Player) actor;
-            if (player == client.getLocalPlayer() && config.screenshotPlayerDeath()) {
-                startReplayBufferSave();
+            if (player == client.getLocalPlayer() && config.clipPlayerDeath()) {
+                startReplayBufferSave("Deaths", SD_DEATHS);
             } else if (player != client.getLocalPlayer()
                     && player.getCanvasTilePoly() != null
-                    && (((player.isFriendsChatMember() || player.isFriend()) && config.screenshotFriendDeath())
-                    || (player.isClanMember() && config.screenshotClanDeath()))) {
-                startReplayBufferSave(); // so we save good one down below
+                    && (((player.isFriendsChatMember() || player.isFriend()) && config.clipFriendDeath())
+                    || (player.isClanMember() && config.clipClanDeath()))) {
+                startReplayBufferSave("Death " + player.getName(), SD_DEATHS);
             }
         }
     }
 
     @Subscribe
     public void onPlayerLootReceived(final PlayerLootReceived playerLootReceived) { // here a user gets some loot
-        if (config.screenshotKills()) {
+        if (config.clipKills()) {
             final Player player = playerLootReceived.getPlayer();
             final String name = player.getName();
             String fileName = "Kill " + name;
-            startReplayBufferSave(); // so we save etc etc
+            startReplayBufferSave(fileName, SD_PVP_KILLS);
         }
     }
 
@@ -416,70 +358,70 @@ public class AutoClipPlugin extends Plugin {
             }
         }
 
-        if (config.screenshotPet() && PET_MESSAGES.stream().anyMatch(chatMessage::contains)) {
+        if (config.clipPet() && PET_MESSAGES.stream().anyMatch(chatMessage::contains)) {
             String fileName = "Pet";
-            startReplayBufferSave();
+            startReplayBufferSave(fileName, SD_PETS);
         }
 
-        if (config.screenshotBossKills()) {
+        if (config.clipBossKills()) {
             Matcher m = BOSSKILL_MESSAGE_PATTERN.matcher(chatMessage);
             if (m.matches()) {
                 String bossName = m.group(1);
                 String bossKillcount = m.group(2);
                 String fileName = bossName + "(" + bossKillcount + ")";
-                startReplayBufferSave();
+                startReplayBufferSave(fileName, SD_BOSS_KILLS);
             }
         }
 
-        if (chatMessage.equals(CHEST_LOOTED_MESSAGE) && config.screenshotRewards()) {
+        if (chatMessage.equals(CHEST_LOOTED_MESSAGE) && config.clipRewards()) {
             final int regionID = client.getLocalPlayer().getWorldLocation().getRegionID();
             String eventName = CHEST_LOOT_EVENTS.get(regionID);
             if (eventName != null) {
-                startReplayBufferSave();
+                startReplayBufferSave(eventName, SD_CHEST_LOOT);
             }
         }
 
-        if (config.screenshotValuableDrop()) {
+        if (config.clipValuableDrop()) {
             Matcher m = VALUABLE_DROP_PATTERN.matcher(chatMessage);
             if (m.matches()) {
                 int valuableDropValue = Integer.parseInt(m.group(2).replaceAll(",", ""));
                 if (valuableDropValue >= config.valuableDropThreshold()) {
                     String valuableDropName = m.group(1);
                     String fileName = "Valuable drop " + valuableDropName;
-                    startReplayBufferSave();
+                    startReplayBufferSave(fileName, SD_VALUABLE_DROPS);
                 }
             }
         }
 
-        if (config.screenshotUntradeableDrop() && !isInsideGauntlet()) {
+        if (config.clipUntradeableDrop() && !isInsideGauntlet()) {
             Matcher m = UNTRADEABLE_DROP_PATTERN.matcher(chatMessage);
             if (m.matches()) {
                 String untradeableDropName = m.group(1);
                 String fileName = "Untradeable drop " + untradeableDropName;
-                startReplayBufferSave();
+                startReplayBufferSave(fileName, SD_UNTRADEABLE_DROPS);
             }
         }
 
-        if (config.screenshotDuels()) {
+        if (config.clipDuels()) {
             Matcher m = DUEL_END_PATTERN.matcher(chatMessage);
             if (m.find()) {
                 String result = m.group(1);
                 String count = m.group(2).replace(",", "");
                 String fileName = "Duel " + result + " (" + count + ")";
-                startReplayBufferSave();
+                startReplayBufferSave(fileName, SD_DUELS);
             }
         }
 
-        if (config.screenshotCollectionLogEntries() && chatMessage.startsWith(COLLECTION_LOG_TEXT) && client.getVarbitValue(Varbits.COLLECTION_LOG_NOTIFICATION) == 1) {
+        if (config.clipCollectionLogEntries() && chatMessage.startsWith(COLLECTION_LOG_TEXT) && client.getVarbitValue(Varbits.COLLECTION_LOG_NOTIFICATION) == 1) {
             String entry = Text.removeTags(chatMessage).substring(COLLECTION_LOG_TEXT.length());
             String fileName = "Collection log (" + entry + ")";
-            startReplayBufferSave();
+            startReplayBufferSave(fileName, SD_COLLECTION_LOG);
         }
 
-        if (chatMessage.contains("combat task") && config.screenshotCombatAchievements() && client.getVarbitValue(Varbits.COMBAT_ACHIEVEMENTS_POPUP) == 1) {
+        if (chatMessage.contains("combat task") && config.clipCombatAchievements() && client.getVarbitValue(Varbits.COMBAT_ACHIEVEMENTS_POPUP) == 1) {
             String fileName = parseCombatAchievementWidget(chatMessage);
             if (!fileName.isEmpty()) {
-                startReplayBufferSave();
+                startReplayBufferSave(fileName, SD_COMBAT_ACHIEVEMENTS);
             }
         }
     }
@@ -487,7 +429,7 @@ public class AutoClipPlugin extends Plugin {
     @Subscribe
     public void onWidgetLoaded(WidgetLoaded event) {
         String fileName;
-        String screenshotSubDir;
+        String clipSubDir;
         int groupId = event.getGroupId();
 
         switch (groupId) {
@@ -497,22 +439,22 @@ public class AutoClipPlugin extends Plugin {
             case THEATRE_OF_BLOOD_REWARD_GROUP_ID:
             case TOA_REWARD_GROUP_ID:
             case BARROWS_REWARD_GROUP_ID:
-                if (!config.screenshotRewards()) {
+                if (!config.clipRewards()) {
                     return;
                 }
                 break;
             case LEVEL_UP_GROUP_ID:
-                if (!config.screenshotLevels()) {
+                if (!config.clipLevels()) {
                     return;
                 }
                 break;
             case DIALOG_SPRITE_GROUP_ID:
-                if (!(config.screenshotLevels() || config.screenshotHighGamble())) {
+                if (!(config.clipLevels() || config.clipHighGamble())) {
                     return;
                 }
                 break;
             case KINGDOM_GROUP_ID:
-                if (!config.screenshotKingdom()) {
+                if (!config.clipKingdom()) {
                     return;
                 }
                 break;
@@ -521,19 +463,19 @@ public class AutoClipPlugin extends Plugin {
         switch (groupId) {
             case KINGDOM_GROUP_ID: {
                 fileName = "Kingdom " + LocalDate.now();
-                screenshotSubDir = SD_KINGDOM_REWARDS;
+                clipSubDir = SD_KINGDOM_REWARDS;
                 break;
             }
             case CHAMBERS_OF_XERIC_REWARD_GROUP_ID: {
                 if (killType == KillType.COX) {
                     fileName = "Chambers of Xeric(" + killCountNumber + ")";
-                    screenshotSubDir = SD_BOSS_KILLS;
+                    clipSubDir = SD_BOSS_KILLS;
                     killType = null;
                     killCountNumber = 0;
                     break;
                 } else if (killType == KillType.COX_CM) {
                     fileName = "Chambers of Xeric Challenge Mode(" + killCountNumber + ")";
-                    screenshotSubDir = SD_BOSS_KILLS;
+                    clipSubDir = SD_BOSS_KILLS;
                     killType = null;
                     killCountNumber = 0;
                     break;
@@ -559,7 +501,7 @@ public class AutoClipPlugin extends Plugin {
                         throw new IllegalStateException();
                 }
 
-                screenshotSubDir = SD_BOSS_KILLS;
+                clipSubDir = SD_BOSS_KILLS;
                 killType = null;
                 killCountNumber = 0;
                 break;
@@ -583,7 +525,7 @@ public class AutoClipPlugin extends Plugin {
                         throw new IllegalStateException();
                 }
 
-                screenshotSubDir = SD_BOSS_KILLS;
+                clipSubDir = SD_BOSS_KILLS;
                 killType = null;
                 killCountNumber = 0;
                 break;
@@ -594,7 +536,7 @@ public class AutoClipPlugin extends Plugin {
                 }
 
                 fileName = "Barrows(" + killCountNumber + ")";
-                screenshotSubDir = SD_BOSS_KILLS;
+                clipSubDir = SD_BOSS_KILLS;
                 killType = null;
                 killCountNumber = 0;
                 break;
@@ -603,7 +545,7 @@ public class AutoClipPlugin extends Plugin {
             case DIALOG_SPRITE_GROUP_ID:
             case QUEST_COMPLETED_GROUP_ID: {
                 // level up widget gets loaded prior to the text being set, so wait until the next tick
-                shouldTakeScreenshot = true;
+                shouldTakeClip = true;
                 return;
             }
             case CLUE_SCROLL_REWARD_GROUP_ID: {
@@ -612,7 +554,7 @@ public class AutoClipPlugin extends Plugin {
                 }
 
                 fileName = Character.toUpperCase(clueType.charAt(0)) + clueType.substring(1) + "(" + clueNumber + ")";
-                screenshotSubDir = SD_CLUE_SCROLL_REWARDS;
+                clipSubDir = SD_CLUE_SCROLL_REWARDS;
                 clueType = null;
                 clueNumber = null;
                 break;
@@ -621,7 +563,7 @@ public class AutoClipPlugin extends Plugin {
                 return;
         }
 
-        startReplayBufferSave();
+        startReplayBufferSave(fileName, clipSubDir);
     }
 
     @Subscribe
@@ -636,15 +578,15 @@ public class AutoClipPlugin extends Plugin {
                 }
                 String topText = client.getVarcStrValue(VarClientStr.NOTIFICATION_TOP_TEXT);
                 String bottomText = client.getVarcStrValue(VarClientStr.NOTIFICATION_BOTTOM_TEXT);
-                if (topText.equalsIgnoreCase("Collection log") && config.screenshotCollectionLogEntries()) {
+                if (topText.equalsIgnoreCase("Collection log") && config.clipCollectionLogEntries()) {
                     String entry = Text.removeTags(bottomText).substring("New item:".length());
                     String fileName = "Collection log (" + entry + ")";
-                    startReplayBufferSave();
+                    startReplayBufferSave(fileName, SD_COLLECTION_LOG);
                 }
-                if (topText.equalsIgnoreCase("Combat Task Completed!") && config.screenshotCombatAchievements() && client.getVarbitValue(Varbits.COMBAT_ACHIEVEMENTS_POPUP) == 0) {
+                if (topText.equalsIgnoreCase("Combat Task Completed!") && config.clipCombatAchievements() && client.getVarbitValue(Varbits.COMBAT_ACHIEVEMENTS_POPUP) == 0) {
                     String entry = Text.removeTags(bottomText).substring("Task Completed: ".length());
                     String fileName = "Combat task (" + entry.replaceAll("[:?]", "") + ")";
-                    startReplayBufferSave();
+                    startReplayBufferSave(fileName, SD_COMBAT_ACHIEVEMENTS);
                 }
                 notificationStarted = false;
                 break;
@@ -652,7 +594,7 @@ public class AutoClipPlugin extends Plugin {
     }
 
     private void manualScreenshot() {
-        startReplayBufferSave();
+        startReplayBufferSave("Manual", "Manual");
     }
 
     /**
@@ -755,88 +697,71 @@ public class AutoClipPlugin extends Plugin {
 
         // Let's fetch Replay Buffer Settings and save the data we need from it
         this.obsController.getOutputSettings("Replay Buffer", getOutputSettingsResponse -> {
-            if (getOutputSettingsResponse.getOutputSettings().has("max_time_sec")) {
-                this.replayBufferDuration = getOutputSettingsResponse.getOutputSettings().get("max_time_sec").getAsLong();
+            this.baseObsOutputSettings = getOutputSettingsResponse.getOutputSettings();
+            if (this.baseObsOutputSettings.has("max_time_sec")) {
+                this.replayBufferDuration = this.baseObsOutputSettings.get("max_time_sec").getAsLong();
             }
         });
     }
 
-    private final AtomicBoolean isAlreadySaving = new AtomicBoolean(false);
+    private synchronized void setReplayBufferOutput(String fileName, String subDir) {
+        JsonObject alteredOutputSettings = this.baseObsOutputSettings.deepCopy();
+        alteredOutputSettings.addProperty("path", this.baseObsOutputSettings.get("path").getAsString() + "/" + subDir);
+        alteredOutputSettings.addProperty("directory", this.baseObsOutputSettings.get("directory").getAsString() + "/" + subDir);
+        alteredOutputSettings.addProperty("format", fileName + " " + this.OBS_BASE_FORMAT);
+
+        this.obsController.setOutputSettings("Replay Buffer", alteredOutputSettings, 1000);
+    }
+
+    private synchronized void resetReplayBufferOutput() {
+        JsonObject alteredOutputSettings = this.baseObsOutputSettings.deepCopy();
+
+        this.obsController.setOutputSettings("Replay Buffer", alteredOutputSettings, 1000);
+    }
+
+    private synchronized void sendSaveReplayBufferRequest() {
+        this.obsController.saveReplayBuffer(saveReplayBufferResponse -> {
+
+            if (!saveReplayBufferResponse.isSuccessful()) {
+                if (this.config.notifyWhenClipTaken()) {
+                    this.notifier.notify("OBS Auto-clip save failed");
+                }
+            }
+        });
+    }
+
+    private void onSuccessfulSave(ReplayBufferSavedEvent event) {
+        final StringBuilder notificationStringBuilder = new StringBuilder();
+        if (this.config.notifyWhenClipTaken()) {
+            notificationStringBuilder
+                    .append("OBS Auto-clip save successful ")
+                    .append("(path: ")
+                    .append(event.getSavedReplayPath())
+            ;
+            if (this.replayBufferDuration > 0) {
+                notificationStringBuilder
+                        .append(", duration: ")
+                        .append(replayBufferDuration)
+                        .append("s");
+            }
+            notificationStringBuilder.append(").");
+
+            this.notifier.notify(notificationStringBuilder.toString());
+        }
+        this.executorService.submit(this::resetReplayBufferOutput);
+    }
 
     /**
      * Start Replay Buffer Save
      */
-    private synchronized void startReplayBufferSave() {
-        if (!this.isAlreadySaving.get()) {
-            this.isAlreadySaving.set(true);
-            
-            System.out.println("Scheduling Save Replay Buffer");
-
+    private synchronized void startReplayBufferSave(String fileName, String subDir) {
+        try {
             this.executor.schedule(() -> {
-                this.obsController.saveReplayBuffer(saveReplayBufferResponse -> {
-                    final StringBuilder notificationStringBuilder = new StringBuilder()
-                            .append("A replay buffer save was triggered.");
-
-                    if (saveReplayBufferResponse.isSuccessful()) {
-                        // Replay Buffer Saved
-                        System.out.println("Saved Replay Successfully");
-
-                        // I will probably call it a "Clip" for the players, as they may not know what a replay buffer means, but damn, it's
-                        // working exactly as I would've expected it to now!
-                        // yup, alright, that was fun! <-- it sure was! Thanks a whole whole bunch haha
-                        // byyyeee! U too
-                        // See you and happy holidays/xmas/new year!!
-                        LocalDateTime now = LocalDateTime.now();
-                        if (this.replayBufferDuration > 0) {// Replay Buffer duration has been retrieved from settings
-                            LocalDateTime replayBufferStartTime = now.minus(Duration.ofSeconds(replayBufferDuration)).minus(Duration.ofSeconds(delay));
-                            LocalDateTime replayBufferEndTime = replayBufferStartTime.plus(Duration.ofSeconds(replayBufferDuration));
-                            notificationStringBuilder
-                                    .append(" (start: ")
-                                    .append(this.dateTimeFormatter.format(replayBufferStartTime))
-                                    .append(", end: ")
-                                    .append(this.dateTimeFormatter.format(replayBufferEndTime))
-                                    .append(")");
-                        }
-                        else {
-                            notificationStringBuilder
-                                    .append(" ")
-                                    .append(this.dateTimeFormatter.format(now));
-                        }
-                    }
-                    else {
-                        System.out.println("Saved Replay Failed");
-
-                        notificationStringBuilder.append(" Unfortunately, OBS failed to save it :/");
-                    }
-
-                    if (this.config.notifyWhenTaken()) {
-                        this.notifier.notify(notificationStringBuilder.toString());
-                    }
-
-                    this.isAlreadySaving.set(false);
-                });
-            }, this.delay, TimeUnit.SECONDS);
-
-            /*
-            System.out.println("Request Batch Request");
-            RequestBatch requestBatch = RequestBatch.builder()
-                    .haltOnFailure(false)
-                    .executionType(RequestBatch.RequestBatchExecutionType.SerialRealtime)
-                    .request(SleepRequest.builder().sleepMillis(this.delay * 1000).build())
-                    .request(SaveReplayBufferRequest.builder().build())
-                    .build(); // I'm not 100% sure the RequestBatch is working/well implemented in the library :/
-
-            this.obsController.sendRequestBatch(requestBatch, requestBatchResponse -> {
-                // this will be invoked only when all requests have completed (sleep + save)
-                // OBS waited the delay for us and then Saved the replay buffer
-                this.isAlreadySaving.set(false);
-                System.out.println("Request Batch Response");
-            });
-            */
-        }
-        else {
-            // Ignore save because one is already happening
-            System.out.println("Already saving a replay");
+                this.executorService.submit(() -> this.setReplayBufferOutput(fileName, subDir));
+                this.executorService.schedule(this::sendSaveReplayBufferRequest, 1, TimeUnit.SECONDS);
+            }, config.obsDelay(), TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("startReplayBufferSave error 2", e);
         }
     }
 

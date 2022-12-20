@@ -31,12 +31,12 @@ import net.runelite.client.config.ConfigSection;
 import net.runelite.client.config.Keybind;
 import net.runelite.client.util.ImageUploadStyle;
 
-@ConfigGroup("screenshot")
+@ConfigGroup("clip")
 public interface AutoClipConfig extends Config
 {
 	@ConfigSection(
-			name = "What to Screenshot",
-			description = "All the options that select what to screenshot",
+			name = "What to Record",
+			description = "All the options that select what to clip",
 			position = 99
 	)
 	String whatSection = "what";
@@ -49,163 +49,163 @@ public interface AutoClipConfig extends Config
 	String obsSection = "OBS Settings";
 
 	@ConfigItem(
-			keyName = "notifyWhenTaken",
+			keyName = "notifyWhenClipTaken",
 			name = "Notify When Taken",
-			description = "Configures whether or not you are notified when a screenshot has been taken",
+			description = "Configures whether or not you are notified when a clip has been taken",
 			position = 2
 	)
-	default boolean notifyWhenTaken()
+	default boolean notifyWhenClipTaken()
 	{
 		return true;
 	}
 
 	@ConfigItem(
-			keyName = "hotkey",
-			name = "Screenshot hotkey",
-			description = "When you press this key a screenshot will be taken",
+			keyName = "clipHotkey",
+			name = "Record hotkey",
+			description = "When you press this key a clip will be taken",
 			position = 4
 	)
-	default Keybind hotkey()
+	default Keybind clipHotkey()
 	{
 		return Keybind.NOT_SET;
 	}
 
 	@ConfigItem(
-			keyName = "rewards",
-			name = "Screenshot Rewards",
-			description = "Configures whether screenshots are taken of clues, barrows, and quest completion",
+			keyName = "clipRewards",
+			name = "Record Rewards",
+			description = "Configures whether clips are taken of clues, barrows, and quest completion",
 			position = 3,
 			section = whatSection
 	)
-	default boolean screenshotRewards()
+	default boolean clipRewards()
 	{
 		return true;
 	}
 
 	@ConfigItem(
-			keyName = "levels",
-			name = "Screenshot Levels",
-			description = "Configures whether screenshots are taken of level ups",
+			keyName = "clipLevels",
+			name = "Record Levels",
+			description = "Configures whether clips are taken of level ups",
 			position = 4,
 			section = whatSection
 	)
-	default boolean screenshotLevels()
+	default boolean clipLevels()
 	{
 		return true;
 	}
 
 	@ConfigItem(
-			keyName = "kingdom",
-			name = "Screenshot Kingdom Reward",
-			description = "Configures whether screenshots are taken of Kingdom Reward",
+			keyName = "clipKingdom",
+			name = "Record Kingdom Reward",
+			description = "Configures whether clips are taken of Kingdom Reward",
 			position = 5,
 			section = whatSection
 	)
-	default boolean screenshotKingdom()
+	default boolean clipKingdom()
 	{
 		return true;
 	}
 
 	@ConfigItem(
-			keyName = "pets",
-			name = "Screenshot Pet",
-			description = "Configures whether screenshots are taken of receiving pets",
+			keyName = "clipPets",
+			name = "Record Pet",
+			description = "Configures whether clips are taken of receiving pets",
 			position = 6,
 			section = whatSection
 	)
-	default boolean screenshotPet()
+	default boolean clipPet()
 	{
 		return true;
 	}
 
 	@ConfigItem(
-			keyName = "kills",
-			name = "Screenshot PvP Kills",
-			description = "Configures whether or not screenshots are automatically taken of PvP kills",
+			keyName = "clipKills",
+			name = "Record PvP Kills",
+			description = "Configures whether or not clips are automatically taken of PvP kills",
 			position = 8,
 			section = whatSection
 	)
-	default boolean screenshotKills()
+	default boolean clipKills()
 	{
 		return false;
 	}
 
 	@ConfigItem(
-			keyName = "boss",
-			name = "Screenshot Boss Kills",
-			description = "Configures whether or not screenshots are automatically taken of boss kills",
+			keyName = "clipBoss",
+			name = "Record Boss Kills",
+			description = "Configures whether or not clips are automatically taken of boss kills",
 			position = 9,
 			section = whatSection
 	)
-	default boolean screenshotBossKills()
+	default boolean clipBossKills()
 	{
 		return false;
 	}
 
 	@ConfigItem(
-			keyName = "playerDeath",
-			name = "Screenshot Deaths",
-			description = "Configures whether or not screenshots are automatically taken when you die.",
+			keyName = "clipPlayerDeath",
+			name = "Record Deaths",
+			description = "Configures whether or not clips are automatically taken when you die.",
 			position = 10,
 			section = whatSection
 	)
-	default boolean screenshotPlayerDeath()
+	default boolean clipPlayerDeath()
 	{
 		return false;
 	}
 
 	@ConfigItem(
-			keyName = "friendDeath",
-			name = "Screenshot Friend Deaths",
-			description = "Configures whether or not screenshots are automatically taken when friends or friends chat members die.",
+			keyName = "clipFriendDeath",
+			name = "Record Friend Deaths",
+			description = "Configures whether or not clips are automatically taken when friends or friends chat members die.",
 			position = 11,
 			section = whatSection
 	)
-	default boolean screenshotFriendDeath()
+	default boolean clipFriendDeath()
 	{
 		return false;
 	}
 
 	@ConfigItem(
-			keyName = "clanDeath",
-			name = "Screenshot Clan Deaths",
-			description = "Configures whether or not screenshots are automatically taken when clan members die.",
+			keyName = "clipClanDeath",
+			name = "Record Clan Deaths",
+			description = "Configures whether or not clips are automatically taken when clan members die.",
 			position = 12,
 			section = whatSection
 	)
-	default boolean screenshotClanDeath()
+	default boolean clipClanDeath()
 	{
 		return false;
 	}
 
 	@ConfigItem(
-			keyName = "duels",
-			name = "Screenshot Duels",
-			description = "Configures whether or not screenshots are automatically taken of the duel end screen.",
+			keyName = "clipDuels",
+			name = "Record Duels",
+			description = "Configures whether or not clips are automatically taken of the duel end screen.",
 			position = 13,
 			section = whatSection
 	)
-	default boolean screenshotDuels()
+	default boolean clipDuels()
 	{
 		return false;
 	}
 
 	@ConfigItem(
-			keyName = "valuableDrop",
-			name = "Screenshot Valuable drops",
-			description = "Configures whether or not screenshots are automatically taken when you receive a valuable drop.",
+			keyName = "clipValuableDrop",
+			name = "Record Valuable drops",
+			description = "Configures whether or not clips are automatically taken when you receive a valuable drop.",
 			position = 14,
 			section = whatSection
 	)
-	default boolean screenshotValuableDrop()
+	default boolean clipValuableDrop()
 	{
 		return false;
 	}
 
 	@ConfigItem(
-			keyName = "valuableDropThreshold",
+			keyName = "clipValuableDropThreshold",
 			name = "Valuable Threshold",
-			description = "The minimum value to save screenshots of valuable drops.",
+			description = "The minimum value to save clips of valuable drops.",
 			position = 15,
 			section = whatSection
 	)
@@ -215,49 +215,49 @@ public interface AutoClipConfig extends Config
 	}
 
 	@ConfigItem(
-			keyName = "untradeableDrop",
-			name = "Screenshot Untradeable drops",
-			description = "Configures whether or not screenshots are automatically taken when you receive an untradeable drop.",
+			keyName = "clipUntradeableDrop",
+			name = "Record Untradeable drops",
+			description = "Configures whether or not clips are automatically taken when you receive an untradeable drop.",
 			position = 16,
 			section = whatSection
 	)
-	default boolean screenshotUntradeableDrop()
+	default boolean clipUntradeableDrop()
 	{
 		return false;
 	}
 
 	@ConfigItem(
-			keyName = "baHighGamble",
-			name = "Screenshot BA high gambles",
-			description = "Take a screenshot of your reward from a high gamble at Barbarian Assault.",
+			keyName = "clipBaHighGamble",
+			name = "Record BA high gambles",
+			description = "Take a clip of your reward from a high gamble at Barbarian Assault.",
 			position = 18,
 			section = whatSection
 	)
-	default boolean screenshotHighGamble()
+	default boolean clipHighGamble()
 	{
 		return false;
 	}
 
 	@ConfigItem(
-			keyName = "collectionLogEntries",
-			name = "Screenshot collection log entries",
-			description = "Take a screenshot when completing an entry in the collection log",
+			keyName = "clipCollectionLogEntries",
+			name = "Record collection log entries",
+			description = "Take a clip when completing an entry in the collection log",
 			position = 19,
 			section = whatSection
 	)
-	default boolean screenshotCollectionLogEntries()
+	default boolean clipCollectionLogEntries()
 	{
 		return true;
 	}
 
 	@ConfigItem(
-			keyName = "combatAchievements",
-			name = "Screenshot combat achievements",
-			description = "Take a screenshot when completing a combat achievement task",
+			keyName = "clipCombatAchievements",
+			name = "Record combat achievements",
+			description = "Take a clip when completing a combat achievement task",
 			position = 20,
 			section = whatSection
 	)
-	default boolean screenshotCombatAchievements()
+	default boolean clipCombatAchievements()
 	{
 		return true;
 	}
